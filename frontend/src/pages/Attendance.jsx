@@ -1,0 +1,28 @@
+import { BookOpen, CalendarDays, Check, ChevronDown, Printer, UserRound, X } from 'lucide-react';
+import { formatDate } from '../utils/helpers.js';
+import { EmptyState } from '../components/EmptyState.jsx';
+
+export function AttendancePage({ groups, teacherId, setTeacherId, groupId, setGroupId, date, setDate, students, marks, setMarks, marked, present }) {
+  const teachers = [...new Map(groups.map((group) => [String(group.teacherId), { id: String(group.teacherId), name: group.teacherName }])).values()];
+  const teacherGroups = groups.filter((group) => String(group.teacherId) === String(teacherId));
+  const selectedGroup = teacherGroups.find((group) => String(group.id) === String(groupId));
+  function chooseTeacher(event) {
+    setTeacherId(event.target.value);
+  }
+  function setAll(status) {
+    setMarks(Object.fromEntries(students.map((student) => [student.id, status])));
+  }
+  function printAttendance() {
+    window.print();
+  }
+  return <>
+    <section className="attendance-toolbar panel"><div className="attendance-select-wrap"><label htmlFor="attendance-teacher">المدرس</label><div className="select-control"><UserRound size={17} /><select id="attendance-teacher" value={teacherId} onChange={chooseTeacher}><option value="">اختر المدرس</option>{teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.name}</option>)}</select><ChevronDown size={15} /></div></div><div className="attendance-select-wrap"><label htmlFor="attendance-group">المجموعة</label><div className="select-control"><BookOpen size={17} /><select id="attendance-group" value={groupId} onChange={(event) => setGroupId(event.target.value)} disabled={!teacherId}><option value="">{teacherId ? 'اختر المجموعة' : 'اختر المدرس أولًا'}</option>{teacherGroups.map((group) => <option key={group.id} value={group.id}>{group.subject} · {group.grade}{group.schedule ? ` · ${group.schedule}` : ''}</option>)}</select><ChevronDown size={15} /></div></div><div className="attendance-date-wrap"><label htmlFor="attendance-date">تاريخ الحصة</label><div className="date-control"><CalendarDays size={17} /><input id="attendance-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} /></div></div>{selectedGroup && <div className="attendance-group-meta"><span>{selectedGroup.teacherName}</span><b>{selectedGroup.studentCount} طالب</b></div>}</section>
+    {!teacherId ? <div className="panel attendance-empty"><div className="attendance-empty-icon"><CalendarDays size={22} /></div><h3>اختر المدرس لعرض مجموعاته</h3><p>بعد اختيار المدرس، ستظهر مجموعاته لتحديد كشف الحضور.</p></div> : !groupId ? <div className="panel attendance-empty"><div className="attendance-empty-icon"><CalendarDays size={22} /></div><h3>اختر مجموعة لبدء الكشف</h3><p>ستظهر قائمة الطلاب المسجلين في المجموعة هنا.</p></div> : <section className="panel attendance-sheet">
+      <div className="attendance-sheet-head"><div><span className="panel-kicker">كشف المجموعة</span><h3>{selectedGroup?.subject} <span>·</span> {selectedGroup?.grade}</h3><p>{formatDate(date)} <span>·</span> {students.length} طالب</p></div><div className="mark-all-actions"><span>تحديد الكل:</span><button className="mark-all-present" onClick={() => setAll('present')}><Check size={15} />حاضر</button><button className="mark-all-absent" onClick={() => setAll('absent')}><X size={15} />غائب</button><button className="attendance-print-button" onClick={printAttendance}><Printer size={15} />طباعة / حفظ PDF</button></div></div>
+      <div className="attendance-print-heading"><h1>كشف الحضور والغياب</h1><p>المدرس: {selectedGroup?.teacherName} <span>·</span> المجموعة: {selectedGroup?.name} <span>·</span> {selectedGroup?.subject} — {selectedGroup?.grade} <span>·</span> التاريخ: {formatDate(date)}</p></div>
+      <div className="attendance-progress"><span style={{ width: `${students.length ? marked / students.length * 100 : 0}%` }} /></div>
+      {students.length ? <div className="attendance-list"><div className="attendance-print-columns"><span>م</span><span>اسم الطالب</span><span>رقم الهاتف</span><span>الحالة</span></div>{students.map((student, index) => <div className="attendance-row" key={student.id}><span className="attendance-index">{String(index + 1).padStart(2, '0')}</span><span className={`person-avatar avatar-color-${index % 4}`}>{student.name.slice(0, 1)}</span><span className="attendance-person"><b>{student.name}</b><small>{student.phone || 'لا يوجد رقم هاتف'}</small></span><span className={`attendance-state ${marks[student.id] ? `state-${marks[student.id]}` : 'state-unmarked'}`}>{marks[student.id] === 'present' ? 'حاضر' : marks[student.id] === 'absent' ? 'غائب' : 'لم يُسجّل'}</span><div className="attendance-actions"><button className={`attendance-toggle present-toggle ${marks[student.id] === 'present' ? 'selected' : ''}`} aria-label={`تحديد ${student.name} حاضر`} onClick={() => setMarks({ ...marks, [student.id]: 'present' })}><Check size={17} /></button><button className={`attendance-toggle absent-toggle ${marks[student.id] === 'absent' ? 'selected' : ''}`} aria-label={`تحديد ${student.name} غائب`} onClick={() => setMarks({ ...marks, [student.id]: 'absent' })}><X size={17} /></button></div></div>)}</div> : <EmptyState title="لا يوجد طلاب في هذه المجموعة" description="أضف الطلاب للمجموعة أولًا من صفحة الطلاب." />}
+      <div className="attendance-sheet-footer"><span><span className="legend-dot present-dot" />حاضر <b>{present}</b></span><span><span className="legend-dot absent-dot" />غائب <b>{Object.values(marks).filter((mark) => mark === 'absent').length}</b></span><span className="sheet-unsaved">تم تحديد {marked} من {students.length}</span></div>
+    </section>}
+  </>;
+}

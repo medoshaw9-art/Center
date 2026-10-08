@@ -3,25 +3,18 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
   "scripts": {
-    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:server": "node --watch --env-file-if-exists=.env server/index.js",
-    "dev:client": "vite --host 0.0.0.0",
-    "build": "vite build",
-    "start": "node --env-file-if-exists=.env server/index.js"
-  },
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^12.2.0",
-    "express": "^5.1.0",
-    "jsonwebtoken": "^9.0.2",
-    "lucide-react": "^0.468.0",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "dev": "concurrently -k \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "npm --workspace backend run dev",
+    "dev:frontend": "npm --workspace frontend run dev",
+    "build": "npm --workspace frontend run build",
+    "start": "npm --workspace backend run start"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^5.0.2",
-    "concurrently": "^9.2.0",
-    "vite": "^7.1.7"
+    "concurrently": "^9.2.0"
   }
 }

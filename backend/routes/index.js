@@ -1,322 +1,19 @@
-import bcrypt from "bcryptjs";
-import Database from "better-sqlite3";
-import express from "express";
-import jwt from "jsonwebtoken";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import express from 'express';
+import { db } from '../config/database.js';
+import { login, getCurrentUser } from '../controllers/auth.js';
+import { importStudents } from '../controllers/students.js';
+import { authenticate, requireAdmin, requireGroupAccess, requireStudentAccess } from '../middleware/auth.js';
+import { cairoDate, isValidTeacherPhoto, normalizeGroupGrade, shiftDate } from '../services/helpers.js';
 
-const directory = path.dirname(fileURLToPath(import.meta.url));
-const dataDirectory = path.resolve(directory, "../data");
-fs.mkdirSync(dataDirectory, { recursive: true });
-const db = new Database(
-  process.env.DB_PATH || path.join(dataDirectory, "center.sqlite"),
-);
-db.pragma("foreign_keys = ON");
-db.pragma("journal_mode = WAL");
-db.exec(`
-  CREATE TABLE IF NOT EXISTS teachers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT NOT NULL DEFAULT '',
-    photo TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('admin', 'teacher')), teacher_id INTEGER REFERENCES teachers(id),
-    active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS groups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, teacher_id INTEGER NOT NULL REFERENCES teachers(id),
-    name TEXT NOT NULL, subject TEXT NOT NULL, grade TEXT NOT NULL, grade_level TEXT NOT NULL DEFAULT '',
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS students (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT NOT NULL DEFAULT '',
-    grade TEXT NOT NULL DEFAULT '', guardian_phone TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
-    active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS enrollments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL REFERENCES students(id),
-    group_id INTEGER NOT NULL REFERENCES groups(id), active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(student_id, group_id)
-  );
-  CREATE TABLE IF NOT EXISTS sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL REFERENCES groups(id),
-    session_date TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(group_id, session_date)
-  );
-  CREATE TABLE IF NOT EXISTS attendance (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES sessions(id),
-    student_id INTEGER NOT NULL REFERENCES students(id),
-    status TEXT NOT NULL CHECK(status IN ('present', 'absent')),
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(session_id, student_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_students_name ON students(name);
-  CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date);
-`);
-const teacherColumns = new Set(
-  db.pragma("table_info(teachers)").map((column) => column.name),
-);
-if (!teacherColumns.has("photo")) {
-  db.exec("ALTER TABLE teachers ADD COLUMN photo TEXT NOT NULL DEFAULT ''");
-}
-const groupColumns = new Set(
-  db.pragma("table_info(groups)").map((column) => column.name),
-);
-if (!groupColumns.has("schedule")) {
-  db.exec("ALTER TABLE groups ADD COLUMN schedule TEXT NOT NULL DEFAULT ''");
-}
-if (!groupColumns.has("grade_level")) {
-  db.exec("ALTER TABLE groups ADD COLUMN grade_level TEXT NOT NULL DEFAULT ''");
-}
+const router=express.Router();
 
-function cairoDate(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Africa/Cairo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const part = (type) => parts.find((item) => item.type === type)?.value;
-  return `${part("year")}-${part("month")}-${part("day")}`;
-}
+router.get("/api/health", (request, response) => response.json({ ok: true }));
 
-function shiftDate(dateString, amount) {
-  const date = new Date(`${dateString}T12:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + amount);
-  return date.toISOString().slice(0, 10);
-}
+router.post("/api/auth/login", login);
 
-function isValidTeacherPhoto(photo) {
-  return (
-    typeof photo === "string" &&
-    photo.length <= 2_100_000 &&
-    /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(photo)
-  );
-}
+router.get("/api/auth/me", authenticate, getCurrentUser);
 
-const fixedGradeLabels = {
-  first: "الأول الثانوي",
-  second: "الثاني الثانوي",
-  third: "الثالث الثانوي",
-};
-
-const normalizeGroupGrade = (gradeLevel, fallbackGrade = "") => {
-  const normalized = String(gradeLevel || "").trim();
-  if (normalized && fixedGradeLabels[normalized])
-    return fixedGradeLabels[normalized];
-  const current = String(fallbackGrade || "").trim();
-  return current && Object.values(fixedGradeLabels).includes(current)
-    ? current
-    : "الثالث الثانوي";
-};
-
-const seed = db.transaction(() => {
-  if (db.prepare("SELECT COUNT(*) AS count FROM users").get().count) return;
-  const addTeacher = db.prepare(
-    "INSERT INTO teachers (name, phone) VALUES (?, ?)",
-  );
-  const addUser = db.prepare(
-    "INSERT INTO users (username, password_hash, role, teacher_id) VALUES (?, ?, ?, ?)",
-  );
-  const addGroup = db.prepare(
-    "INSERT INTO groups (teacher_id, name, subject, grade) VALUES (?, ?, ?, ?)",
-  );
-  const addStudent = db.prepare(
-    "INSERT INTO students (name, phone, grade, guardian_phone) VALUES (?, ?, ?, ?)",
-  );
-  const addEnrollment = db.prepare(
-    "INSERT INTO enrollments (student_id, group_id) VALUES (?, ?)",
-  );
-  const adminUsername = process.env.ADMIN_USERNAME || "admin";
-  const adminPassword = process.env.ADMIN_PASSWORD || "markaz123";
-  if (process.env.NODE_ENV === "production" && !process.env.ADMIN_PASSWORD) {
-    throw new Error(
-      "Set ADMIN_PASSWORD before initializing a production database",
-    );
-  }
-  addUser.run(adminUsername, bcrypt.hashSync(adminPassword, 10), "admin", null);
-  if (process.env.NODE_ENV === "production") return;
-  const teacherData = [
-    ["أحمد محمد", "01012345678", "رياضيات", "الثالث الثانوي", "مجموعة A"],
-    ["منى إبراهيم", "01123456789", "فيزياء", "الثالث الثانوي", "مجموعة B"],
-    ["خالد حسن", "01234567890", "كيمياء", "الثاني الثانوي", "مجموعة A"],
-  ];
-  const groups = teacherData.map(([name, phone, subject, grade, groupName]) => {
-    const teacherId = Number(addTeacher.run(name, phone).lastInsertRowid);
-    return {
-      id: Number(
-        addGroup.run(teacherId, groupName, subject, grade).lastInsertRowid,
-      ),
-      grade,
-    };
-  });
-  const students = [
-    ["محمد أحمد", "01020000001", 0],
-    ["محمود علي", "01020000002", 0],
-    ["أحمد حسن", "01020000003", 0],
-    ["سارة محمود", "01020000004", 0],
-    ["عمر خالد", "01020000005", 0],
-    ["نور الدين سامي", "01020000006", 0],
-    ["ليلى أشرف", "01020000007", 1],
-    ["يوسف عادل", "01020000008", 1],
-    ["مريم مصطفى", "01020000009", 1],
-    ["زياد طارق", "01020000010", 1],
-    ["ملك هشام", "01020000011", 2],
-    ["آدم شريف", "01020000012", 2],
-  ];
-  const today = cairoDate();
-  students.forEach(([name, phone, groupIndex], index) => {
-    const group = groups[groupIndex];
-    const studentId = Number(
-      addStudent.run(
-        name,
-        phone,
-        group.grade,
-        `010300000${String(index + 1).padStart(2, "0")}`,
-      ).lastInsertRowid,
-    );
-    addEnrollment.run(studentId, group.id);
-    const date = index % 3 === 0 ? shiftDate(today, -1) : today;
-    const sessionId = Number(
-      db
-        .prepare(
-          "INSERT INTO sessions (group_id, session_date) VALUES (?, ?) ON CONFLICT(group_id, session_date) DO UPDATE SET session_date = excluded.session_date RETURNING id",
-        )
-        .get(group.id, date).id,
-    );
-    db.prepare(
-      "INSERT INTO attendance (session_id, student_id, status) VALUES (?, ?, ?)",
-    ).run(sessionId, studentId, index % 4 === 0 ? "absent" : "present");
-  });
-});
-seed();
-
-const app = express();
-app.use(express.json({ limit: "3mb" }));
-const jwtSecret =
-  process.env.JWT_SECRET || "development-only-change-before-deploying";
-if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
-  throw new Error("Set JWT_SECRET before starting in production");
-}
-
-function authenticate(request, response, next) {
-  const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-  if (!token) return response.status(401).json({ error: "يلزم تسجيل الدخول" });
-  try {
-    const payload = jwt.verify(token, jwtSecret);
-    const user = db
-      .prepare(
-        "SELECT id, username, role, teacher_id, active FROM users WHERE id = ?",
-      )
-      .get(payload.id);
-    if (!user?.active || user.role !== "admin")
-      return response.status(401).json({ error: "يلزم تسجيل الدخول كمدير" });
-    request.user = user;
-    next();
-  } catch {
-    response
-      .status(401)
-      .json({ error: "انتهت جلسة الدخول، سجل الدخول مجددًا" });
-  }
-}
-
-function requireAdmin(request, response, next) {
-  if (request.user.role !== "admin")
-    return response.status(403).json({ error: "هذه العملية متاحة للمدير فقط" });
-  next();
-}
-
-function canAccessGroup(user, groupId) {
-  return (
-    user.role === "admin" ||
-    Boolean(
-      db
-        .prepare(
-          "SELECT 1 FROM groups WHERE id = ? AND teacher_id = ? AND active = 1",
-        )
-        .get(groupId, user.teacher_id),
-    )
-  );
-}
-
-function canAccessStudent(user, studentId) {
-  return (
-    user.role === "admin" ||
-    Boolean(
-      db
-        .prepare(
-          `
-    SELECT 1 FROM enrollments e JOIN groups g ON g.id = e.group_id
-    WHERE e.student_id = ? AND e.active = 1 AND g.teacher_id = ? AND g.active = 1
-  `,
-        )
-        .get(studentId, user.teacher_id),
-    )
-  );
-}
-
-function requireGroupAccess(request, response, next) {
-  const id = Number(request.params.groupId || request.params.id);
-  if (!canAccessGroup(request.user, id))
-    return response.status(404).json({ error: "المجموعة غير موجودة" });
-  next();
-}
-
-function requireStudentAccess(request, response, next) {
-  if (!canAccessStudent(request.user, Number(request.params.id)))
-    return response.status(404).json({ error: "الطالب غير موجود" });
-  next();
-}
-
-app.get("/api/health", (request, response) => response.json({ ok: true }));
-
-app.post("/api/auth/login", (request, response) => {
-  const { username, password } = request.body || {};
-  const user = db
-    .prepare(
-      `SELECT u.id, u.username, u.password_hash, u.role, u.teacher_id, t.name
-    FROM users u LEFT JOIN teachers t ON t.id = u.teacher_id WHERE u.username = ? AND u.active = 1`,
-    )
-    .get(String(username || "").trim());
-  if (
-    !user ||
-    user.role !== "admin" ||
-    !bcrypt.compareSync(String(password || ""), user.password_hash)
-  )
-    return response
-      .status(401)
-      .json({ error: "اسم المستخدم أو كلمة المرور غير صحيحة" });
-  const token = jwt.sign({ id: user.id }, jwtSecret, { expiresIn: "12h" });
-  response.json({
-    token,
-    user: {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      teacherId: user.teacher_id,
-      name: user.name || "مدير السنتر",
-    },
-  });
-});
-
-app.get("/api/auth/me", authenticate, (request, response) => {
-  const user = db
-    .prepare(
-      "SELECT u.id, u.username, u.role, u.teacher_id, t.name FROM users u LEFT JOIN teachers t ON t.id = u.teacher_id WHERE u.id = ?",
-    )
-    .get(request.user.id);
-  response.json({
-    id: user.id,
-    username: user.username,
-    role: user.role,
-    teacherId: user.teacher_id,
-    name: user.name || "مدير السنتر",
-  });
-});
-
-app.get("/api/dashboard", authenticate, (request, response) => {
+router.get("/api/dashboard", authenticate, (request, response) => {
   const user = request.user;
   const scope = user.role === "teacher" ? "AND g.teacher_id = @teacherId" : "";
   const parameters = { today: cairoDate(), teacherId: user.teacher_id };
@@ -363,7 +60,7 @@ app.get("/api/dashboard", authenticate, (request, response) => {
   });
 });
 
-app.get("/api/teachers", authenticate, requireAdmin, (request, response) => {
+router.get("/api/teachers", authenticate, requireAdmin, (request, response) => {
   response.json(
     db
       .prepare(
@@ -379,7 +76,7 @@ app.get("/api/teachers", authenticate, requireAdmin, (request, response) => {
   );
 });
 
-app.post("/api/teachers", authenticate, requireAdmin, (request, response) => {
+router.post("/api/teachers", authenticate, requireAdmin, (request, response) => {
   const {
     name,
     phone = "",
@@ -413,7 +110,7 @@ app.post("/api/teachers", authenticate, requireAdmin, (request, response) => {
   }
 });
 
-app.put(
+router.put(
   "/api/teachers/:id",
   authenticate,
   requireAdmin,
@@ -442,7 +139,7 @@ app.put(
   },
 );
 
-app.delete(
+router.delete(
   "/api/teachers/:id",
   authenticate,
   requireAdmin,
@@ -486,7 +183,7 @@ app.delete(
   },
 );
 
-app.get("/api/groups", authenticate, (request, response) => {
+router.get("/api/groups", authenticate, (request, response) => {
   const isTeacher = request.user.role === "teacher";
   const groups = db
     .prepare(
@@ -501,7 +198,7 @@ app.get("/api/groups", authenticate, (request, response) => {
   response.json(groups);
 });
 
-app.post(
+router.post(
   "/api/groups/bulk",
   authenticate,
   requireAdmin,
@@ -561,7 +258,7 @@ app.post(
   },
 );
 
-app.post("/api/groups", authenticate, requireAdmin, (request, response) => {
+router.post("/api/groups", authenticate, requireAdmin, (request, response) => {
   const {
     teacherId,
     name,
@@ -600,7 +297,7 @@ app.post("/api/groups", authenticate, requireAdmin, (request, response) => {
   response.status(201).json({ id: Number(result.lastInsertRowid) });
 });
 
-app.put("/api/groups/:id", authenticate, requireAdmin, (request, response) => {
+router.put("/api/groups/:id", authenticate, requireAdmin, (request, response) => {
   const {
     teacherId,
     name,
@@ -654,7 +351,7 @@ app.put("/api/groups/:id", authenticate, requireAdmin, (request, response) => {
   response.json({ ok: true });
 });
 
-app.get("/api/students", authenticate, (request, response) => {
+router.get("/api/students", authenticate, (request, response) => {
   const filters = ["s.active=1", "e.active=1", "g.active=1"];
   const values = [];
   const search = String(request.query.search || "").trim();
@@ -699,7 +396,7 @@ app.get("/api/students", authenticate, (request, response) => {
   );
 });
 
-app.post("/api/students", authenticate, (request, response) => {
+router.post("/api/students", authenticate, (request, response) => {
   const {
     name,
     phone = "",
@@ -734,7 +431,14 @@ app.post("/api/students", authenticate, (request, response) => {
   response.status(201).json({ id: create() });
 });
 
-app.get(
+router.post(
+  "/api/students/import",
+  authenticate,
+  requireAdmin,
+  importStudents,
+);
+
+router.get(
   "/api/students/:id",
   authenticate,
   requireStudentAccess,
@@ -778,7 +482,7 @@ app.get(
   },
 );
 
-app.put(
+router.put(
   "/api/students/:id",
   authenticate,
   requireStudentAccess,
@@ -810,7 +514,7 @@ app.put(
   },
 );
 
-app.post(
+router.post(
   "/api/students/:id/enrollments",
   authenticate,
   requireStudentAccess,
@@ -835,7 +539,7 @@ app.post(
   },
 );
 
-app.delete(
+router.delete(
   "/api/students/:id",
   authenticate,
   requireAdmin,
@@ -851,7 +555,7 @@ app.delete(
   },
 );
 
-app.get(
+router.get(
   "/api/groups/:groupId/attendance",
   authenticate,
   requireGroupAccess,
@@ -871,7 +575,7 @@ app.get(
   },
 );
 
-app.put(
+router.put(
   "/api/groups/:groupId/attendance",
   authenticate,
   requireGroupAccess,
@@ -912,24 +616,4 @@ app.put(
   },
 );
 
-const builtClient = path.resolve(directory, "../dist");
-if (fs.existsSync(builtClient)) {
-  app.use(express.static(builtClient));
-  app.get("/{*path}", (request, response, next) => {
-    if (request.path.startsWith("/api/")) return next();
-    response.sendFile(path.join(builtClient, "index.html"));
-  });
-}
-
-app.use((error, request, response, next) => {
-  console.error(error);
-  if (response.headersSent) return next(error);
-  const payload = { error: "حدث خطأ غير متوقع" };
-  if (process.env.NODE_ENV !== "production") payload.details = error.message;
-  response.status(500).json(payload);
-});
-
-const port = Number(process.env.PORT || 3001);
-app.listen(port, () =>
-  console.log(`Center API listening on http://localhost:${port}`),
-);
+export default router;
