@@ -122,6 +122,55 @@ function App() {
     setToast(message);
   }
 
+  async function addCustomTeacherGrade(label) {
+    if (!selectedTeacher || !label?.trim()) return;
+    const cleanLabel = label.trim();
+    const normalizedLabel = cleanLabel.replace(/[أإآ]/g, 'ا').replace(/\s+/g, ' ');
+    const standardGradeLevels = {
+      'اولى ثانوي': 'first',
+      'الاول الثانوي': 'first',
+      'ثانية ثانوي': 'second',
+      'الثاني الثانوي': 'second',
+      'ثالثة ثانوي': 'third',
+      'الثالث الثانوي': 'third',
+    };
+    const gradeLevel = standardGradeLevels[normalizedLabel] || cleanLabel;
+    setModal({ type: 'group', teacherId: selectedTeacher.id, grade: cleanLabel, gradeLevel });
+  }
+
+  async function renameTeacherGrade(oldLabel, newLabel) {
+    const from = String(oldLabel || '').trim();
+    const to = String(newLabel || '').trim();
+    if (!selectedTeacher || !from || !to || from === to) return;
+    try {
+      await request(`/teachers/${selectedTeacher.id}/grade-labels`, { token, method: 'PUT', body: JSON.stringify({ from, to }) });
+      notify('تم تعديل اسم الصف بنجاح');
+      setRefreshKey((current) => current + 1);
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
+  async function deleteTeacherGrade(label) {
+    const grade = String(label || '').trim();
+    if (!selectedTeacher || !grade) return;
+    const gradeLabels = { first: 'أولى ثانوي', second: 'ثانية ثانوي', third: 'ثالثة ثانوي' };
+    const fixedGradeLabels = { first: 'الأول الثانوي', second: 'الثاني الثانوي', third: 'الثالث الثانوي' };
+    const displayGrade = gradeLabels[grade] || grade;
+    if (!window.confirm(`هل تريد حذف جميع المجموعات في صف ${displayGrade}؟`)) return;
+    try {
+      await request(`/teachers/${selectedTeacher.id}/grade-labels`, { token, method: 'DELETE', body: JSON.stringify({ label: grade }) });
+      if (groups.some((group) => String(group.id) === String(selectedTeacherGroupId) && (String(group.gradeLevel || '').trim() === grade || String(group.grade || '').trim() === grade || String(group.grade || '').trim() === fixedGradeLabels[grade]))) {
+        setSelectedTeacherGroupId('');
+        setStudents([]);
+      }
+      notify('تم حذف الصف بنجاح');
+      setRefreshKey((current) => current + 1);
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
   function logout() {
     localStorage.removeItem('markaz-token');
     setToken('');
@@ -208,6 +257,21 @@ function App() {
     }
   }
 
+  async function deleteGroup(group) {
+    if (!window.confirm(`هل تريد حذف المجموعة ${group.name || group.subject}؟ سيتم حذف تسجيلات الطلاب وسجل الحضور لهذه المجموعة، مع الإبقاء على ملفات الطلاب.`)) return;
+    try {
+      await request(`/groups/${group.id}`, { token, method: 'DELETE' });
+      if (String(selectedTeacherGroupId) === String(group.id)) {
+        setSelectedTeacherGroupId('');
+        setStudents([]);
+      }
+      notify('تم حذف المجموعة بنجاح');
+      setRefreshKey((current) => current + 1);
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
   async function openStudent(id) {
     try {
       const profile = await request(`/students/${id}`, { token });
@@ -276,10 +340,10 @@ function App() {
           {loading && <div className="loading-line"><span /> جارٍ تحديث البيانات</div>}
           {page === 'dashboard' && <Dashboard data={dashboard} groups={groups} user={user} onNavigate={goTo} onOpenStudent={openStudent} onAddStudent={() => setModal({ type: 'student' })} />}
           {page === 'teachers' && <TeachersPage teachers={teachers} onAdd={() => setModal({ type: 'teacher' })} onEdit={(teacher) => setModal({ type: 'teacher', item: teacher })} onArchive={(teacher) => deleteItem('teacher', teacher)} onView={(teacher) => { setStudents([]); setSelectedTeacherGroupId(''); setSelectedTeacher(teacher); setPage('teacher-detail'); }} />}
-          {page === 'teacher-detail' && <TeacherDetail teacher={selectedTeacher} groups={groups} students={students} selectedGroupId={selectedTeacherGroupId} onChooseGroup={(id) => { setStudents([]); setSelectedTeacherGroupId(String(id)); }} onAddGroup={(grade, gradeLevel) => setModal({ type: 'group', teacherId: selectedTeacher?.id, grade, gradeLevel })} onAddStudent={() => setModal({ type: 'student', teacherId: selectedTeacher?.id, groupId: selectedTeacherGroupId })} onImportStudents={() => setStudentImportOpen(true)} onOpenStudent={openStudent} />}
+          {page === 'teacher-detail' && <TeacherDetail teacher={selectedTeacher} groups={groups} students={students} isAdmin={isAdmin} selectedGroupId={selectedTeacherGroupId} onChooseGroup={(id) => { setStudents([]); setSelectedTeacherGroupId(String(id)); }} onAddGroup={(grade, gradeLevel) => setModal({ type: 'group', teacherId: selectedTeacher?.id, grade, gradeLevel })} onEditGroup={(group) => setModal({ type: 'group', item: group })} onDeleteGroup={deleteGroup} onAddCustomGrade={addCustomTeacherGrade} onRenameGrade={renameTeacherGrade} onDeleteGrade={deleteTeacherGrade} onAddStudent={() => setModal({ type: 'student', teacherId: selectedTeacher?.id, groupId: selectedTeacherGroupId })} onImportStudents={() => setStudentImportOpen(true)} onOpenStudent={openStudent} />}
           {page === 'students' && <StudentsPage students={students} groups={groups} search={search} setSearch={setSearch} groupFilter={groupFilter} setGroupFilter={setGroupFilter} isAdmin={isAdmin} onAdd={() => setModal({ type: 'student' })} onEdit={(student) => setModal({ type: 'student', item: student })} onArchive={(student) => deleteItem('student', student)} onOpen={openStudent} />}
           {page === 'student-detail' && <StudentDetail student={studentProfile} onBack={() => goTo('students')} onEdit={(student) => setModal({ type: 'student', item: student })} />}
-          {page === 'groups' && <GroupsPage groups={groups} isAdmin={isAdmin} onSelect={(id) => { goTo('students'); setGroupFilter(String(id)); }} onAdd={() => setModal({ type: 'group' })} onEdit={(group) => setModal({ type: 'group', item: group })} />}
+          {page === 'groups' && <GroupsPage groups={groups} isAdmin={isAdmin} onSelect={(id) => { goTo('students'); setGroupFilter(String(id)); }} onAdd={() => setModal({ type: 'group' })} onEdit={(group) => setModal({ type: 'group', item: group })} onDelete={deleteGroup} />}
           {page === 'attendance' && <AttendancePage groups={groups} teacherId={attendanceTeacherId} setTeacherId={chooseAttendanceTeacher} groupId={attendanceGroup} setGroupId={setAttendanceGroup} date={attendanceDate} setDate={setAttendanceDate} students={attendanceStudents} marks={attendanceMarks} setMarks={setAttendanceMarks} marked={attendanceDone} present={attendancePresent} />}
           {page === 'reports' && <ReportsPage data={dashboard} />}
         </div>

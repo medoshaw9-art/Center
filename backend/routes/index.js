@@ -3,7 +3,7 @@ import { db } from '../config/database.js';
 import { login, getCurrentUser } from '../controllers/auth.js';
 import { importStudents } from '../controllers/students.js';
 import { authenticate, requireAdmin, requireGroupAccess, requireStudentAccess } from '../middleware/auth.js';
-import { cairoDate, isValidTeacherPhoto, normalizeGroupGrade, shiftDate } from '../services/helpers.js';
+import { cairoDate, fixedGradeLabels, isValidTeacherPhoto, normalizeGroupGrade, shiftDate } from '../services/helpers.js';
 
 const router=express.Router();
 
@@ -231,11 +231,12 @@ router.post(
       .get(normalizedTeacherId);
     if (!teacher)
       return response.status(400).json({ error: "المدرس غير موجود" });
+    const rawGradeLevel = String(gradeLevel || "").trim();
     const normalizedGradeLevel = ["first", "second", "third"].includes(
-      String(gradeLevel),
+      rawGradeLevel,
     )
-      ? String(gradeLevel)
-      : "";
+      ? rawGradeLevel
+      : rawGradeLevel;
     const normalizedGrade = normalizeGroupGrade(normalizedGradeLevel, grade);
     const insertGroup = db.prepare(
       "INSERT INTO groups (teacher_id,name,subject,grade,grade_level,schedule) VALUES (?,?,?,?,?,?)",
@@ -276,11 +277,12 @@ router.post("/api/groups", authenticate, requireAdmin, (request, response) => {
     .prepare("SELECT id FROM teachers WHERE id=? AND active=1")
     .get(normalizedTeacherId);
   if (!teacher) return response.status(400).json({ error: "المدرس غير موجود" });
+  const rawGradeLevel = String(gradeLevel || "").trim();
   const normalizedGradeLevel = ["first", "second", "third"].includes(
-    String(gradeLevel),
+    rawGradeLevel,
   )
-    ? String(gradeLevel)
-    : "";
+    ? rawGradeLevel
+    : rawGradeLevel;
   const normalizedGrade = normalizeGroupGrade(normalizedGradeLevel, grade);
   const result = db
     .prepare(
@@ -317,11 +319,12 @@ router.put("/api/groups/:id", authenticate, requireAdmin, (request, response) =>
     .prepare("SELECT id FROM teachers WHERE id=? AND active=1")
     .get(teacherId);
   if (!teacher) return response.status(400).json({ error: "المدرس غير موجود" });
+  const rawGradeLevel = String(gradeLevel || "").trim();
   const normalizedGradeLevel = ["first", "second", "third"].includes(
-    String(gradeLevel),
+    rawGradeLevel,
   )
-    ? String(gradeLevel)
-    : "";
+    ? rawGradeLevel
+    : rawGradeLevel;
   const currentGroup = db
     .prepare(
       "SELECT grade, grade_level, name FROM groups WHERE id=? AND active=1",
@@ -350,6 +353,105 @@ router.put("/api/groups/:id", authenticate, requireAdmin, (request, response) =>
     return response.status(404).json({ error: "المجموعة غير موجودة" });
   response.json({ ok: true });
 });
+
+router.delete("/api/groups/:id", authenticate, requireAdmin, (request, response) => {
+  const groupId = Number(request.params.id);
+  if (!Number.isInteger(groupId) || groupId <= 0)
+    return response.status(400).json({ error: "المجموعة غير موجودة" });
+  const deleteGroup = db.transaction(() => {
+    const group = db
+      .prepare("SELECT id FROM groups WHERE id=? AND active=1")
+      .get(groupId);
+    if (!group) return false;
+    db.prepare(
+      "DELETE FROM attendance WHERE session_id IN (SELECT id FROM sessions WHERE group_id=?)",
+    ).run(groupId);
+    db.prepare("DELETE FROM sessions WHERE group_id=?").run(groupId);
+    db.prepare("DELETE FROM enrollments WHERE group_id=?").run(groupId);
+    db.prepare("DELETE FROM groups WHERE id=?").run(groupId);
+    return true;
+  });
+  if (!deleteGroup())
+    return response.status(404).json({ error: "المجموعة غير موجودة" });
+  response.json({ ok: true });
+});
+
+router.put(
+  "/api/teachers/:teacherId/grade-labels",
+  authenticate,
+  requireAdmin,
+  (request, response) => {
+    const { from, to } = request.body || {};
+    const fromLabel = String(from || "").trim();
+    const toLabel = String(to || "").trim();
+    if (!fromLabel || !toLabel)
+      return response.status(400).json({ error: "اسم الصف مطلوب" });
+    const teacher = db
+      .prepare("SELECT id FROM teachers WHERE id=? AND active=1")
+      .get(Number(request.params.teacherId));
+    if (!teacher)
+      return response.status(404).json({ error: "المدرس غير موجود" });
+    const sourceGrade = fixedGradeLabels[fromLabel] || fromLabel;
+    const result = db
+      .prepare(
+        "UPDATE groups SET grade=?, grade_level=? WHERE teacher_id=? AND active=1 AND (grade=? OR grade_level=?)",
+      )
+      .run(toLabel, "", Number(request.params.teacherId), sourceGrade, fromLabel);
+    if (!result.changes)
+      return response.status(404).json({ error: "لا توجد مجموعات لهذا الصف" });
+    response.json({ ok: true });
+  },
+);
+
+router.delete(
+  "/api/teachers/:teacherId/grade-labels",
+  authenticate,
+  requireAdmin,
+  (request, response) => {
+    const label = String(request.body?.label || "").trim();
+    if (!label)
+      return response.status(400).json({ error: "اسم الصف مطلوب" });
+    const teacher = db
+      .prepare("SELECT id FROM teachers WHERE id=? AND active=1")
+      .get(Number(request.params.teacherId));
+    if (!teacher)
+      return response.status(404).json({ error: "المدرس غير موجود" });
+    const sourceGrade = fixedGradeLabels[label] || label;
+    const deleteGradeGroups = db.transaction(() => {
+      const groupIds = db
+        .prepare(
+          "SELECT id FROM groups WHERE teacher_id=? AND active=1 AND (grade=? OR grade_level=?)",
+        )
+        .all(Number(request.params.teacherId), sourceGrade, label)
+        .map((group) => group.id);
+      if (!groupIds.length) return 0;
+      const placeholders = groupIds.map(() => "?").join(",");
+      const sessionIds = db
+        .prepare(`SELECT id FROM sessions WHERE group_id IN (${placeholders})`)
+        .all(...groupIds)
+        .map((session) => session.id);
+      if (sessionIds.length) {
+        const sessionPlaceholders = sessionIds.map(() => "?").join(",");
+        db.prepare(
+          `DELETE FROM attendance WHERE session_id IN (${sessionPlaceholders})`,
+        ).run(...sessionIds);
+      }
+      db.prepare(
+        `DELETE FROM sessions WHERE group_id IN (${placeholders})`,
+      ).run(...groupIds);
+      db.prepare(
+        `DELETE FROM enrollments WHERE group_id IN (${placeholders})`,
+      ).run(...groupIds);
+      db.prepare(`DELETE FROM groups WHERE id IN (${placeholders})`).run(
+        ...groupIds,
+      );
+      return groupIds.length;
+    });
+    if (!deleteGradeGroups())
+      return response.status(404).json({ error: "لا توجد مجموعات لهذا الصف" });
+    response.json({ ok: true });
+  },
+);
 
 router.get("/api/students", authenticate, (request, response) => {
   const filters = ["s.active=1", "e.active=1", "g.active=1"];

@@ -33,7 +33,11 @@ export const normalizeGroupGrade = (gradeLevel, fallbackGrade = "") => {
   const normalized = String(gradeLevel || "").trim();
   if (normalized && fixedGradeLabels[normalized])
     return fixedGradeLabels[normalized];
+  if (normalized && !["first", "second", "third"].includes(normalized))
+    return normalized;
   const current = String(fallbackGrade || "").trim();
+  if (current && !Object.values(fixedGradeLabels).includes(current))
+    return current;
   return current && Object.values(fixedGradeLabels).includes(current)
     ? current
     : "الثالث الثانوي";
