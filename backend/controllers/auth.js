@@ -8,7 +8,6 @@ export function login(request, response) {
   const user = findActiveUserByUsername(String(username || '').trim());
   if (
     !user ||
-    user.role !== 'admin' ||
     !bcrypt.compareSync(String(password || ''), user.password_hash)
   ) {
     return response
@@ -23,18 +22,21 @@ export function login(request, response) {
       username: user.username,
       role: user.role,
       teacherId: user.teacher_id,
-      name: user.name || 'مدير السنتر',
+      name: user.name || (user.role === 'admin' ? 'مدير السنتر' : 'مدرس'),
     },
   });
 }
 
 export function getCurrentUser(request, response) {
   const user = findUserById(request.user.id);
+  if (!user) {
+    return response.status(401).json({ error: 'المستخدم غير موجود' });
+  }
   response.json({
     id: user.id,
     username: user.username,
     role: user.role,
     teacherId: user.teacher_id,
-    name: user.name || 'مدير السنتر',
+    name: user.name || (user.role === 'admin' ? 'مدير السنتر' : 'مدرس'),
   });
 }

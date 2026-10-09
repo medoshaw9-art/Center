@@ -17,8 +17,8 @@ export function authenticate(request, response, next) {
         "SELECT id, username, role, teacher_id, active FROM users WHERE id = ?",
       )
       .get(payload.id);
-    if (!user?.active || user.role !== "admin")
-      return response.status(401).json({ error: "يلزم تسجيل الدخول كمدير" });
+    if (!user || !user.active)
+      return response.status(401).json({ error: "يلزم تسجيل الدخول" });
     request.user = user;
     next();
   } catch {
@@ -35,31 +35,31 @@ export function requireAdmin(request, response, next) {
 }
 
 export function canAccessGroup(user, groupId) {
-  return (
-    user.role === "admin" ||
-    Boolean(
-      db
-        .prepare(
-          "SELECT 1 FROM groups WHERE id = ? AND teacher_id = ? AND active = 1",
-        )
-        .get(groupId, user.teacher_id),
-    )
+  if (!user || !Number.isInteger(Number(groupId))) return false;
+  if (user.role === "admin") return true;
+  if (user.role !== "teacher" || !user.teacher_id) return false;
+  return Boolean(
+    db
+      .prepare(
+        "SELECT 1 FROM groups WHERE id = ? AND teacher_id = ? AND active = 1",
+      )
+      .get(Number(groupId), user.teacher_id),
   );
 }
 
 export function canAccessStudent(user, studentId) {
-  return (
-    user.role === "admin" ||
-    Boolean(
-      db
-        .prepare(
-          `
+  if (!user || !Number.isInteger(Number(studentId))) return false;
+  if (user.role === "admin") return true;
+  if (user.role !== "teacher" || !user.teacher_id) return false;
+  return Boolean(
+    db
+      .prepare(
+        `
     SELECT 1 FROM enrollments e JOIN groups g ON g.id = e.group_id
     WHERE e.student_id = ? AND e.active = 1 AND g.teacher_id = ? AND g.active = 1
   `,
-        )
-        .get(studentId, user.teacher_id),
-    )
+      )
+      .get(Number(studentId), user.teacher_id),
   );
 }
 

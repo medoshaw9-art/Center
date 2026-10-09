@@ -1,4 +1,5 @@
 import express from 'express';
+import bcrypt from 'bcryptjs';
 import { db } from '../config/database.js';
 import { login, getCurrentUser } from '../controllers/auth.js';
 import { importStudents } from '../controllers/students.js';
@@ -15,7 +16,21 @@ import { cairoDate, fixedGradeLabels, isValidTeacherPhoto, normalizeGroupGrade, 
 
 const router=express.Router();
 
-router.get("/api/health", (request, response) => response.json({ ok: true }));
+router.get("/api/health", (request, response) => {
+  let dbStatus = "ok";
+  try {
+    db.prepare("SELECT 1").get();
+  } catch (error) {
+    dbStatus = "unavailable";
+  }
+  response.json({
+    ok: dbStatus === "ok",
+    status: dbStatus,
+    app: "center-backend",
+    database: dbStatus,
+    timestamp: new Date().toISOString(),
+  });
+});
 
 router.post("/api/auth/login", login);
 
@@ -110,6 +125,15 @@ router.post("/api/teachers", authenticate, requireAdmin, (request, response) => 
       db.prepare(
         "INSERT INTO groups (teacher_id, name, subject, grade) VALUES (?, ?, ?, ?)",
       ).run(id, "مجموعة A", subject.trim(), normalizedGrade);
+      const username = `teacher_${id}`;
+      db.prepare(
+        "INSERT INTO users (username, password_hash, role, teacher_id) VALUES (?, ?, ?, ?)",
+      ).run(
+        username,
+        bcrypt.hashSync("teacher123", 10),
+        "teacher",
+        id,
+      );
       return id;
     });
     response.status(201).json({ id: create() });
