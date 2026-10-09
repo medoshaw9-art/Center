@@ -2,7 +2,15 @@ import express from 'express';
 import { db } from '../config/database.js';
 import { login, getCurrentUser } from '../controllers/auth.js';
 import { importStudents } from '../controllers/students.js';
-import { authenticate, requireAdmin, requireGroupAccess, requireStudentAccess } from '../middleware/auth.js';
+
+import {
+  authenticate,
+  requireAdmin,
+  requireGroupAccess,
+  requireStudentAccess,
+  canAccessGroup,
+} from "../middleware/auth.js";
+
 import { cairoDate, fixedGradeLabels, isValidTeacherPhoto, normalizeGroupGrade, shiftDate } from '../services/helpers.js';
 
 const router=express.Router();
