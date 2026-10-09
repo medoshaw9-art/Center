@@ -94,4 +94,53 @@ describe('backend auth and health', () => {
     });
     assert.equal(unauthorizedGroup.status, 404);
   });
+
+  test('bulk group creation accepts the required fields and creates multiple groups', async () => {
+    const adminLogin = await fetch(`http://127.0.0.1:${port}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'markaz123' }),
+    });
+    const adminPayload = await adminLogin.json();
+    assert.equal(adminLogin.status, 200);
+
+    const teachersResponse = await fetch(`http://127.0.0.1:${port}/api/teachers`, {
+      headers: { Authorization: `Bearer ${adminPayload.token}` },
+    });
+    const teachers = await teachersResponse.json();
+    assert.equal(teachersResponse.status, 200);
+    assert.ok(teachers.length > 0);
+
+    const singleGroup = await fetch(`http://127.0.0.1:${port}/api/groups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminPayload.token}` },
+      body: JSON.stringify({
+        teacherId: teachers[0].id,
+        name: 'مجموعة اختبار واحدة',
+        subject: 'لغة عربية',
+        grade: 'الثالث الثانوي',
+        gradeLevel: 'third',
+        schedule: '09:00',
+      }),
+    });
+    const singleGroupPayload = await singleGroup.json();
+    assert.equal(singleGroup.status, 201);
+    assert.ok(singleGroupPayload.id);
+
+    const bulkResponse = await fetch(`http://127.0.0.1:${port}/api/groups/bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminPayload.token}` },
+      body: JSON.stringify({
+        teacherId: teachers[0].id,
+        subject: 'علوم',
+        grade: 'الثالث الثانوي',
+        gradeLevel: 'third',
+        schedule: '10:00',
+        names: ['مجموعة علوم 1', 'مجموعة علوم 2'],
+      }),
+    });
+    const bulkPayload = await bulkResponse.json();
+    assert.equal(bulkResponse.status, 201);
+    assert.equal(bulkPayload.ids.length, 2);
+  });
 });
