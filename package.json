@@ -1,21 +1,20 @@
 {
-  "name": "markaz-center-manager",
+  "name": "@markaz/frontend",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "frontend",
-    "backend"
-  ],
   "scripts": {
-    "dev": "concurrently -k \"npm:dev:backend\" \"npm:dev:frontend\"",
-    "dev:backend": "npm --workspace backend run dev",
-    "dev:frontend": "npm --workspace frontend run dev",
-    "build": "npm --workspace frontend run build",
-    "start": "npm --workspace backend run start",
-    "test": "npm --workspace backend run test"
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
-    "concurrently": "^9.2.0"
+    "@vitejs/plugin-react": "^5.0.2",
+    "vite": "^7.1.7"
   }
 }
